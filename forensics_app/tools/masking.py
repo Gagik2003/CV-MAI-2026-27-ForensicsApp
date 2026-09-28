@@ -14,7 +14,7 @@ from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
 
 
-DEFAULT_THRESHOLD = 20
+DEFAULT_THRESHOLD = 0
 BinaryMask = NDArray[np.bool_]
 
 
