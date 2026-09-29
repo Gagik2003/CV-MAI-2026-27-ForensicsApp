@@ -96,7 +96,7 @@ class MainWindow:
                 button = ttk.Button(
                     sidebar,
                     text=tool.title,
-                    style="Tool.TButton",
+                    style=self._button_style(tool),
                     command=lambda selected=tool: self.run_tool(selected),
                 )
                 button.pack(fill="x", pady=2)
@@ -118,6 +118,16 @@ class MainWindow:
         self.results.pack(fill="both", expand=True)
 
         ttk.Label(container, textvariable=self.status, anchor="w", padding=(10, 6), relief="sunken").pack(fill="x")
+
+    def _button_style(self, tool: ForensicsTool) -> str:
+        """Tools that set ``button_color`` get their own coloured button style."""
+        if not tool.button_color:
+            return "Tool.TButton"
+        name = f"{tool.tool_id}.Tool.TButton"
+        style = ttk.Style(self.root)
+        style.configure(name, background=tool.button_color, foreground="white")
+        style.map(name, background=[("active", tool.button_color)])
+        return name
 
     def _bind_shortcuts(self) -> None:
         self.root.bind_all("<Control-o>", lambda _event: self.open_image())
