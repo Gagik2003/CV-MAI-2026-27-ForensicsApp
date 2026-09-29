@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, simpledialog, ttk
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
@@ -24,7 +24,7 @@ OPERATIONS = (
 def _grayscale_pixels(image: Image.Image) -> np.ndarray:
     if image.mode not in ("1", "L", "LA", "P", "RGB", "RGBA"):
         raise ValueError("Use an 8-bit grayscale or RGB image for histogram operations.")
-    return np.asarray(ImageOps.grayscale(image.convert("RGB")))
+    return np.asarray(image.convert("L"))
 
 
 def _uint8_image(pixels: np.ndarray) -> Image.Image:

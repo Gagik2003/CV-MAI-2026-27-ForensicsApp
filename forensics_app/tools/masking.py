@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image, ImageOps
+from PIL import Image
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
@@ -28,8 +28,7 @@ def make_dark_background_mask(image: Image.Image, threshold: int) -> BinaryMask:
     if not 0 <= threshold <= 255:
         raise ValueError("The threshold must be between 0 and 255.")
 
-    rgb = image.convert("RGB")
-    grayscale = np.asarray(ImageOps.grayscale(rgb))
+    grayscale = np.asarray(image.convert("L"))
     mask = grayscale > threshold
     if "A" in image.getbands():
         mask &= np.asarray(image.getchannel("A")) > 0
@@ -51,11 +50,10 @@ def composite_with_mask(
             "The coat, mask, and target image must have the same dimensions."
         )
 
-    mask_image = Image.fromarray(mask.astype(np.uint8) * 255)
-    output = Image.composite(
-        foreground.convert("RGBA"),
-        background.convert("RGBA"),
-        mask_image,
+    foreground_pixels = np.asarray(foreground.convert("RGBA"))
+    background_pixels = np.asarray(background.convert("RGBA"))
+    output = Image.fromarray(
+        np.where(mask[..., None], foreground_pixels, background_pixels)
     )
     if output.getchannel("A").getextrema() == (255, 255):
         return output.convert("RGB")
