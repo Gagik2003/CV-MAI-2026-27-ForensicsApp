@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image
+from PIL import Image, ImageTk
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
@@ -66,6 +66,10 @@ def composite_with_mask(
 
 
 class _MaskDialog(simpledialog.Dialog):
+    def __init__(self, parent: tk.Misc, title: str, source: Image.Image) -> None:
+        self.source = source
+        super().__init__(parent, title)
+
     def body(self, master: tk.Misc) -> tk.Widget:
         self.direction = tk.StringVar(master, value="UPPER")
         self.threshold = tk.StringVar(master, value=str(DEFAULT_THRESHOLD))
@@ -79,13 +83,53 @@ class _MaskDialog(simpledialog.Dialog):
         )
         entry = ttk.Spinbox(master, textvariable=self.threshold, from_=0, to=255, width=12)
         entry.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+        self.slider = tk.Scale(
+            master, from_=0, to=255, resolution=1, orient="horizontal",
+            showvalue=False, command=self._on_slider,
+        )
+        self.slider.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
         ttk.Label(
             master,
             text="UPPER: brightness > threshold (dark background).\n"
                  "LOWER: brightness < threshold (light background).\n"
                  "Pixels equal to the threshold are excluded.",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=5, pady=5)
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=5, pady=5)
+        ttk.Label(master, text="Original image").grid(row=4, column=0, pady=5)
+        ttk.Label(master, text="Binary mask").grid(row=4, column=1, pady=5)
+        original_preview = self.source.convert("RGB")
+        original_preview.thumbnail((300, 300), Image.Resampling.LANCZOS)
+        self.original_photo = ImageTk.PhotoImage(original_preview, master=master)
+        ttk.Label(master, image=self.original_photo).grid(row=5, column=0, padx=5, pady=5)
+        self.mask_preview = ttk.Label(master)
+        self.mask_preview.grid(row=5, column=1, padx=5, pady=5)
+        self.preview_status = ttk.Label(master)
+        self.preview_status.grid(row=6, column=0, columnspan=2, pady=5)
+        self.threshold.trace_add("write", self._update_preview)
+        self.direction.trace_add("write", self._update_preview)
+        self._update_preview()
         return entry
+
+    def _on_slider(self, value: str) -> None:
+        threshold = str(int(float(value)))
+        if self.threshold.get() != threshold:
+            self.threshold.set(threshold)
+
+    def _update_preview(self, *_args: str) -> None:
+        try:
+            threshold = int(self.threshold.get())
+            mask = make_threshold_mask(self.source, threshold, self.direction.get())
+        except ValueError:
+            self.preview_status.configure(text="Enter a whole number between 0 and 255.")
+            return
+        self.slider.set(threshold)
+        preview = Image.fromarray(mask.astype(np.uint8) * 255)
+        # Resize only for display, after computing the full-resolution binary mask.
+        preview.thumbnail((300, 300), Image.Resampling.NEAREST)
+        self.mask_photo = ImageTk.PhotoImage(preview, master=self.mask_preview)
+        self.mask_preview.configure(image=self.mask_photo)
+        self.preview_status.configure(
+            text=f"White = kept ({mask.mean() * 100:.1f}%). Black = excluded."
+        )
 
     def validate(self) -> bool:
         try:
@@ -110,7 +154,9 @@ class MaskingTool(ForensicsTool):
     description = "Place the coat or an optional texture over another same-size image using a binary mask."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
-        settings = _MaskDialog(parent, self.title).result
+        assert document.current is not None
+        source = document.current
+        settings = _MaskDialog(parent, self.title, source).result
         if settings is None:
             return None
         direction, threshold = settings
@@ -126,8 +172,6 @@ class MaskingTool(ForensicsTool):
         if not target_filename:
             return None
 
-        assert document.current is not None
-        source = document.current
         mask = make_threshold_mask(source, threshold, direction)
         ys, xs = np.nonzero(mask)
         if xs.size == 0:
