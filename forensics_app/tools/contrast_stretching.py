@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import numpy as np
 from PIL import Image, ImageTk
+from skimage import exposure
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
@@ -59,8 +60,6 @@ def stretch_contrast(
 
 def equalize_histogram(image: Image.Image) -> Image.Image:
     """Equalize the global grayscale histogram; keep uniform images unchanged."""
-    from skimage import exposure
-
     pixels = _grayscale_pixels(image)
     if pixels.min() == pixels.max():
         return Image.fromarray(pixels.copy())
@@ -69,8 +68,6 @@ def equalize_histogram(image: Image.Image) -> Image.Image:
 
 def match_histogram(image: Image.Image, reference: Image.Image) -> Image.Image:
     """Match a reference's grayscale distribution without changing image size."""
-    from skimage import exposure
-
     pixels = _grayscale_pixels(image)
     reference_pixels = _grayscale_pixels(reference)
     matched = exposure.match_histograms(pixels, reference_pixels, channel_axis=None)
@@ -81,8 +78,6 @@ def adaptive_equalize_histogram(
     image: Image.Image, clip_limit: float = 0.01
 ) -> Image.Image:
     """Apply CLAHE with automatic tiles of approximately 1/8 of each dimension."""
-    from skimage import exposure
-
     if not 0 < clip_limit <= 1:
         raise ValueError("The CLAHE clip limit must be greater than 0 and at most 1.")
     pixels = _grayscale_pixels(image)
