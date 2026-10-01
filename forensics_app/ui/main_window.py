@@ -163,15 +163,17 @@ class MainWindow:
             return
         try:
             result = tool.run(self.root, self.document)
+            if result is None:
+                self.status.set(f"Cancelled {tool.title}.")
+                return
+            if result.document_path is not None:
+                self.document.load(result.document_path)
+            if result.image is not None:
+                self.document.apply(result.image)
         except Exception as error:  # keep one student feature from crashing the shell
             messagebox.showerror(f"{tool.title} failed", str(error), parent=self.root)
             self.status.set(f"Error in {tool.title}.")
             return
-        if result is None:
-            self.status.set(f"Cancelled {tool.title}.")
-            return
-        if result.image is not None:
-            self.document.apply(result.image)
         self._show_details(result.details)
         self.status.set(result.message)
         self._refresh()
