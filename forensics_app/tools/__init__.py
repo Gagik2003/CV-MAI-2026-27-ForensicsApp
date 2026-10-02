@@ -15,11 +15,11 @@ def build_tool_registry() -> ToolRegistry:
         [
             ImageInfoTool(),
             GrayscaleTool(),
-            MaskingTool(),
-            ContrastStretchingTool(),
             *(SplitChannelTool(channel) for channel in "RGB"),
             SwapChannelsTool(),
+            MaskingTool(),
             HistogramTool(),
+            ContrastStretchingTool(),
         ]
     )
 
