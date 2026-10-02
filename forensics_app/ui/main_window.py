@@ -19,6 +19,7 @@ OPEN_TYPES = [
     ("All files", "*.*"),
 ]
 SAVE_TYPES = [("PNG image", "*.png"), ("JPEG image", "*.jpg"), ("TIFF image", "*.tiff")]
+SIDEBAR_BACKGROUND = "#eef1f5"
 
 
 class MainWindow:
@@ -41,8 +42,8 @@ class MainWindow:
         style = ttk.Style(self.root)
         if "clam" in style.theme_names():
             style.theme_use("clam")
-        style.configure("Sidebar.TFrame", background="#eef1f5")
-        style.configure("Category.TLabel", background="#eef1f5", font=("TkDefaultFont", 10, "bold"))
+        style.configure("Sidebar.TFrame", background=SIDEBAR_BACKGROUND)
+        style.configure("Category.TLabel", background=SIDEBAR_BACKGROUND, font=("TkDefaultFont", 10, "bold"))
         style.configure("Tool.TButton", anchor="w", padding=(10, 7))
         style.configure("Title.TLabel", font=("TkDefaultFont", 16, "bold"))
 
@@ -87,14 +88,17 @@ class MainWindow:
         sidebar = ttk.Frame(body, style="Sidebar.TFrame", padding=12, width=235)
         sidebar.pack_propagate(False)
         body.add(sidebar, weight=0)
-        ttk.Label(sidebar, text="Forensics tools", style="Title.TLabel", background="#eef1f5").pack(
+        ttk.Label(sidebar, text="Forensics tools", style="Title.TLabel", background=SIDEBAR_BACKGROUND).pack(
             anchor="w", pady=(0, 12)
         )
+        tool_list, bind_scroll = self._build_scrollable_list(sidebar)
         for category, tools in self.registry.categories():
-            ttk.Label(sidebar, text=category, style="Category.TLabel").pack(anchor="w", pady=(9, 4))
+            label = ttk.Label(tool_list, text=category, style="Category.TLabel")
+            label.pack(anchor="w", pady=(9, 4))
+            bind_scroll(label)
             for tool in tools:
                 button = ttk.Button(
-                    sidebar,
+                    tool_list,
                     text=tool.title,
                     style=self._button_style(tool),
                     command=lambda selected=tool: self.run_tool(selected),
@@ -102,6 +106,7 @@ class MainWindow:
                 button.pack(fill="x", pady=2)
                 button.bind("<Enter>", lambda _event, selected=tool: self.status.set(selected.description))
                 button.bind("<Leave>", lambda _event: self.status.set("Ready."))
+                bind_scroll(button)
 
         self.image_view = ImageView(body)
         body.add(self.image_view, weight=1)
@@ -118,6 +123,64 @@ class MainWindow:
         self.results.pack(fill="both", expand=True)
 
         ttk.Label(container, textvariable=self.status, anchor="w", padding=(10, 6), relief="sunken").pack(fill="x")
+
+    def _build_scrollable_list(self, parent: ttk.Frame):
+        """Return a frame that scrolls vertically inside ``parent`` and a wheel-binding helper.
+
+        The scrollbar only appears when the content is taller than the space available.
+        """
+        canvas = tk.Canvas(parent, background=SIDEBAR_BACKGROUND, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+
+        content = ttk.Frame(canvas, style="Sidebar.TFrame")
+        window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def overflows() -> bool:
+            return content.winfo_reqheight() > canvas.winfo_height()
+
+        def update_scrolling(_event: tk.Event | None = None) -> None:
+            canvas.configure(scrollregion=(0, 0, content.winfo_reqwidth(), content.winfo_reqheight()))
+            if overflows():
+                scrollbar.pack(side="right", fill="y", padx=(6, 0), before=canvas)
+            else:
+                scrollbar.pack_forget()
+                canvas.yview_moveto(0)
+
+        def fit_width(event: tk.Event) -> None:
+            canvas.itemconfigure(window, width=event.width)
+            update_scrolling()
+
+        def on_wheel(event: tk.Event) -> None:
+            if not overflows():
+                return
+            if event.num in (4, 5):  # X11 reports the wheel as buttons
+                step = -1 if event.num == 4 else 1
+            else:
+                step = -event.delta if abs(event.delta) < 120 else -event.delta // 120
+            canvas.yview_scroll(step, "units")
+
+        def on_touchpad(event: tk.Event) -> None:
+            if not overflows():
+                return
+            low = event.delta & 0xFFFF  # Tk packs the pixel deltas as (dx << 16) | dy
+            delta_y = low if low < 0x8000 else low - 0x10000
+            canvas.yview_moveto(canvas.yview()[0] - delta_y / content.winfo_reqheight())
+
+        def bind_scroll(widget: tk.Misc) -> None:
+            for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                widget.bind(sequence, on_wheel, add="+")
+            try:  # Tk 9 reports trackpad gestures separately from the mouse wheel
+                widget.bind("<TouchpadScroll>", on_touchpad, add="+")
+            except tk.TclError:
+                pass
+
+        content.bind("<Configure>", update_scrolling)
+        canvas.bind("<Configure>", fit_width)
+        bind_scroll(canvas)
+        bind_scroll(content)
+        return content, bind_scroll
 
     def _button_style(self, tool: ForensicsTool) -> str:
         """Tools that set ``button_color`` get their own coloured button style."""
