@@ -92,6 +92,7 @@ class MainWindow:
             anchor="w", pady=(0, 12)
         )
         tool_list, bind_scroll = self._build_scrollable_list(sidebar)
+        self.tool_buttons: list[tuple[ForensicsTool, ttk.Button]] = []
         for category, tools in self.registry.categories():
             label = ttk.Label(tool_list, text=category, style="Category.TLabel")
             label.pack(anchor="w", pady=(9, 4))
@@ -104,6 +105,7 @@ class MainWindow:
                     command=lambda selected=tool: self.run_tool(selected),
                 )
                 button.pack(fill="x", pady=2)
+                self.tool_buttons.append((tool, button))
                 button.bind("<Enter>", lambda _event, selected=tool: self.status.set(selected.description))
                 button.bind("<Leave>", lambda _event: self.status.set("Ready."))
                 bind_scroll(button)
@@ -279,6 +281,9 @@ class MainWindow:
         self.image_view.show(self.document.current)
         self.undo_button.configure(state="normal" if self.document.can_undo else "disabled")
         self.redo_button.configure(state="normal" if self.document.can_redo else "disabled")
+        showing_histogram = self.document.current is not None and "histogram_source" in self.document.current.info
+        for tool, button in self.tool_buttons:
+            button.configure(state="disabled" if showing_histogram and not tool.works_on_histogram else "normal")
         title = self.document.path.name if self.document.path else "No image"
         self.root.title(f"ForensicsApp — {title}")
 

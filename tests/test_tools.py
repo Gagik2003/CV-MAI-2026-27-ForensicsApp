@@ -4,6 +4,7 @@ from PIL import Image
 
 from forensics_app.core import ImageDocument
 from forensics_app.tools.grayscale import GrayscaleTool
+from forensics_app.tools.histogram import histogram_image
 from forensics_app.tools.registry import ToolRegistry
 from forensics_app.tools.split_channel import SplitChannelTool
 from forensics_app.tools.swap_channels import swap_channels
@@ -27,6 +28,18 @@ class ToolTests(unittest.TestCase):
         image = Image.new("RGB", (2, 2), (10, 20, 30))
         self.assertEqual(swap_channels(image, "R", "B").getpixel((0, 0)), (30, 20, 10))
         self.assertEqual(swap_channels(image, "G", "R").getpixel((0, 0)), (20, 10, 30))
+
+    def test_histogram_image_is_a_plot(self) -> None:
+        plot = histogram_image(Image.new("RGB", (4, 4), (10, 20, 30)))
+        self.assertEqual(plot.mode, "RGB")
+
+    def test_channel_button_on_histogram_redraws_that_channel(self) -> None:
+        source = Image.new("RGB", (4, 4), (10, 20, 30))
+        document = ImageDocument()
+        document.current = source
+        document.apply(histogram_image(source))
+        result = SplitChannelTool("R").run(None, document)
+        self.assertIs(result.image.info["histogram_source"], source)
 
     def test_registry_rejects_duplicate_ids(self) -> None:
         with self.assertRaises(ValueError):

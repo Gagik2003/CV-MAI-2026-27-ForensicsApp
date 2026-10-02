@@ -6,6 +6,7 @@ import tkinter as tk
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
+from .histogram import histogram_image
 
 
 NAMES = {"R": "Red", "G": "Green", "B": "Blue"}
@@ -26,6 +27,13 @@ class SplitChannelTool(ForensicsTool):
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult:
         assert document.current is not None
+        source = document.current.info.get("histogram_source")
+        if source is not None:  # a histogram is shown: keep only this channel's line
+            return ToolResult(
+                image=histogram_image(source, self.channel),
+                message=f"Showing the {NAMES[self.channel].lower()} channel histogram.",
+                details={"Operation": "Histogram", "Channel": self.channel},
+            )
         output = document.current.convert("RGB").getchannel(self.channel)
         return ToolResult(
             image=output,

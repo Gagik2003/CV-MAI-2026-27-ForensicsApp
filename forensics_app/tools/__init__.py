@@ -2,6 +2,7 @@
 
 from .contrast_stretching import ContrastStretchingTool
 from .grayscale import GrayscaleTool
+from .histogram import HistogramTool
 from .image_info import ImageInfoTool
 from .masking import MaskingTool
 from .registry import ToolRegistry
@@ -14,10 +15,11 @@ def build_tool_registry() -> ToolRegistry:
         [
             ImageInfoTool(),
             GrayscaleTool(),
-            MaskingTool(),
-            ContrastStretchingTool(),
             *(SplitChannelTool(channel) for channel in "RGB"),
             SwapChannelsTool(),
+            MaskingTool(),
+            HistogramTool(),
+            ContrastStretchingTool(),
         ]
     )
 
