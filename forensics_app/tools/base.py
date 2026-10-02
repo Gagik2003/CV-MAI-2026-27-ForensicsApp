@@ -36,6 +36,7 @@ class ForensicsTool(ABC):
     category = "Other"
     description = ""
     requires_image = True
+    button_color: str | None = None  # optional sidebar button colour, e.g. "#c0392b"
 
     @abstractmethod
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
