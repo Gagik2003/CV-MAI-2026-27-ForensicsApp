@@ -49,6 +49,7 @@ class SwapChannelsTool(ForensicsTool):
     title = "Swap channels"
     category = "Channels"
     description = "Swap two colour channels, e.g. red and blue."
+    works_on_histogram = False
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
         channels = ask_channels(parent)

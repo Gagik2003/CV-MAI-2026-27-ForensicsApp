@@ -37,6 +37,7 @@ class ForensicsTool(ABC):
     description = ""
     requires_image = True
     button_color: str | None = None  # optional sidebar button colour, e.g. "#c0392b"
+    works_on_histogram = True  # False disables the button while a histogram is shown
 
     @abstractmethod
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
