@@ -151,7 +151,7 @@ class MaskingTool(ForensicsTool):
     tool_id = "mask_dark_background"
     title = "Apply mask to another image"
     category = "Masking"
-    description = "Place the coat or an optional texture over another same-size image using a binary mask."
+    description = "Place original pixels or a resized texture over another same-size image using a binary mask."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
         assert document.current is not None
@@ -187,7 +187,7 @@ class MaskingTool(ForensicsTool):
         use_texture = messagebox.askyesnocancel(
             "Coat texture",
             "Replace the original image's pixels with a texture?\n\n"
-            "Yes: choose a same-size texture image.\n"
+            "Yes: choose a texture (resized to the original image's dimensions).\n"
             "No: keep the original image.",
             parent=parent,
         )
@@ -198,7 +198,7 @@ class MaskingTool(ForensicsTool):
         texture_path = None
         if use_texture:
             texture_filename = filedialog.askopenfilename(
-                title="Choose a texture with the same dimensions as the original image",
+                title="Choose a texture to resize to the original image's dimensions",
                 filetypes=[
                     ("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp"),
                     ("All files", "*.*"),
@@ -209,11 +209,8 @@ class MaskingTool(ForensicsTool):
                 return None
             texture_path = Path(texture_filename)
             with Image.open(texture_path) as texture_file:
-                foreground = texture_file.copy()
-            if foreground.size != source.size:
-                raise ValueError(
-                    "The texture must have the same dimensions as the original image "
-                    f"({source.width} × {source.height} pixels)."
+                foreground = texture_file.convert("RGBA").resize(
+                    source.size, Image.Resampling.LANCZOS
                 )
 
         # Always use the original image's silhouette, not the texture's brightness.
