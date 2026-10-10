@@ -1,6 +1,7 @@
 """Register course functionality here so it appears in the sidebar."""
 
 from .contrast_stretching import ContrastStretchingTool
+from .convolution import ConvolutionTool
 from .grayscale import GrayscaleTool
 from .histogram import HistogramTool
 from .image_info import ImageInfoTool
@@ -20,6 +21,7 @@ def build_tool_registry() -> ToolRegistry:
             MaskingTool(),
             HistogramTool(),
             ContrastStretchingTool(),
+            ConvolutionTool(),
         ]
     )
 
