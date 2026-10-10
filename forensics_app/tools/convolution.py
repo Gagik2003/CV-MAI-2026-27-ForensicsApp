@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageTk
 from scipy import ndimage
 
 from forensics_app.core import ImageDocument
@@ -26,6 +26,8 @@ CHANNEL_HINTS = {
     CHANNELS[1]: "Convert to grayscale (luminance) first, then convolve once.",
 }
 ARROWS = {"Up": (-1, 0), "Down": (1, 0), "Left": (0, -1), "Right": (0, 1)}
+PREVIEW_SIZE = (320, 240)
+PREVIEW_DELAY_MS = 250  # wait for a pause in typing before convolving the full image
 
 
 def sobel(direction: str, size: int = 3) -> np.ndarray:
@@ -84,8 +86,11 @@ def _center_over(dialog: tk.Toplevel, window: tk.Misc) -> None:
     dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
 
-def ask_kernel(parent: tk.Misc) -> tuple[np.ndarray, str, str] | None:
-    """Let the user pick a size and type a kernel or load a preset; return ``None`` if cancelled."""
+def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, str, Image.Image] | None:
+    """Let the user pick a size and type a kernel or load a preset while previewing the result on ``image``.
+
+    Returns the kernel, output mode, colour mode and the convolved image, or ``None`` if cancelled.
+    """
     dialog = tk.Toplevel(parent)
     dialog.withdraw()  # shown once centred, so it never flashes at the default position
     dialog.title("Convolution kernel")
@@ -115,17 +120,59 @@ def ask_kernel(parent: tk.Misc) -> tuple[np.ndarray, str, str] | None:
     cells: list[list[tk.StringVar]] = []
     entries: list[list[ttk.Entry]] = []
 
+    ttk.Label(options_side, text="Preview").pack(anchor="w")
+    canvas = tk.Canvas(options_side, width=PREVIEW_SIZE[0], height=PREVIEW_SIZE[1],
+                       background="#20242b", highlightthickness=0)
+    canvas.pack(pady=(4, 2))
+    status = ttk.Label(options_side, foreground="#666666", wraplength=PREVIEW_SIZE[0])
+    status.pack(anchor="w", pady=(0, 12))
+    preview_job: str | None = None
+    preview: tuple[tuple[np.ndarray, str, str], Image.Image] | None = None  # (settings, full-size result)
+    photo: ImageTk.PhotoImage | None = None
+
     def kernel_values() -> np.ndarray | None:
         try:
             return np.array([[float(v.get()) for v in row] for row in cells])
         except ValueError:
             return None
 
-    def highlight_matching_preset(*_: object) -> None:
+    def settings() -> tuple[np.ndarray, str, str] | None:
+        kernel = kernel_values()
+        return None if kernel is None else (kernel, output.get(), channels.get())
+
+    def highlight_matching_preset() -> None:
         kernel = kernel_values()
         for name, button in preset_buttons.items():
             selected = kernel is not None and np.array_equal(kernel, sobel(name, len(cells)))
             button.configure(style="SelectedPreset.TButton" if selected else "Preset.TButton")
+
+    def schedule_preview(*_: object) -> None:
+        nonlocal preview_job
+        if preview_job is not None:
+            dialog.after_cancel(preview_job)
+        status.configure(text="Updating preview…")
+        preview_job = dialog.after(PREVIEW_DELAY_MS, update_preview)
+
+    def update_preview() -> None:
+        nonlocal preview_job, preview, photo
+        preview_job = None
+        canvas.delete("all")
+        current = settings()
+        if current is None:
+            preview = photo = None
+            status.configure(text="Every kernel cell must be a number.")
+            return
+        result = convolve(image, *current)
+        preview = (current, result)
+        thumbnail = result.copy()
+        thumbnail.thumbnail(PREVIEW_SIZE, Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(thumbnail, master=dialog)
+        canvas.create_image(PREVIEW_SIZE[0] // 2, PREVIEW_SIZE[1] // 2, image=photo)
+        status.configure(text="Preview of the full image; Apply keeps exactly this result.")
+
+    def on_cell_change(*_: object) -> None:
+        highlight_matching_preset()
+        schedule_preview()
 
     def load(kernel: np.ndarray) -> None:
         for row, variables in enumerate(cells):
@@ -171,10 +218,10 @@ def ask_kernel(parent: tk.Misc) -> tuple[np.ndarray, str, str] | None:
                 for key in ARROWS:
                     entry.bind(f"<{key}>", lambda event, r=row, c=column: on_arrow(event, r, c))
                 entry.bind("<FocusIn>", lambda event: event.widget.select_range(0, "end"))  # typing replaces it
-                variable.trace_add("write", highlight_matching_preset)
+                variable.trace_add("write", on_cell_change)
                 cells[row].append(variable)
                 entries[row].append(entry)
-        highlight_matching_preset()
+        on_cell_change()  # new cells start with values, so nothing else fires
 
     def resize() -> None:
         build_grid(size.get())
@@ -194,13 +241,14 @@ def ask_kernel(parent: tk.Misc) -> tuple[np.ndarray, str, str] | None:
     def add_choice(title: str, options: tuple[str, ...], hints: dict[str, str]) -> tk.StringVar:
         ttk.Label(options_side, text=title).pack(anchor="w")
         choice = tk.StringVar(dialog, value=options[0])
-        hint = ttk.Label(options_side, text=hints[options[0]], foreground="#666666", wraplength=260)
+        hint = ttk.Label(options_side, text=hints[options[0]], foreground="#666666", wraplength=PREVIEW_SIZE[0])
         for option in options:
             ttk.Radiobutton(
                 options_side, text=option, value=option, variable=choice,
                 command=lambda: hint.configure(text=hints[choice.get()]),
             ).pack(anchor="w", pady=(2, 0))
         hint.pack(anchor="w", pady=(2, 12))
+        choice.trace_add("write", schedule_preview)
         return choice
 
     channels = add_choice("Colour images", CHANNELS, CHANNEL_HINTS)
@@ -208,20 +256,27 @@ def ask_kernel(parent: tk.Misc) -> tuple[np.ndarray, str, str] | None:
 
     result = []
 
+    def close() -> None:
+        if preview_job is not None:
+            dialog.after_cancel(preview_job)
+        dialog.destroy()
+
     def ok(_event: tk.Event | None = None) -> None:
-        kernel = kernel_values()
-        if kernel is None:
+        current = settings()
+        if current is None:
             messagebox.showerror("Convolution", "Every kernel cell must be a number.", parent=dialog)
             return
-        result.append((kernel, output.get(), channels.get()))
-        dialog.destroy()
+        up_to_date = preview is not None and np.array_equal(preview[0][0], current[0]) and preview[0][1:] == current[1:]
+        result.append((*current, preview[1] if up_to_date else convolve(image, *current)))
+        close()
 
     buttons = ttk.Frame(options_side)
     buttons.pack(side="bottom", fill="x")
-    ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")
+    ttk.Button(buttons, text="Cancel", command=close).pack(side="right")
     ttk.Button(buttons, text="Apply", command=ok, default="active").pack(side="right", padx=(0, 6))
     dialog.bind("<Return>", ok)
-    dialog.bind("<Escape>", lambda _event: dialog.destroy())
+    dialog.bind("<Escape>", lambda _event: close())
+    dialog.protocol("WM_DELETE_WINDOW", close)
 
     load(sobel("Horizontal", SIZES[0]))
     _center_over(dialog, parent.winfo_toplevel())
@@ -240,15 +295,20 @@ class ConvolutionTool(ForensicsTool):
     works_on_histogram = False
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
-        choice = ask_kernel(parent)
+        assert document.current is not None
+        choice = ask_kernel(parent, document.current)
         if choice is None:
             return None
-        kernel, output_mode, channel_mode = choice
-        assert document.current is not None
-        output = convolve(document.current, kernel, output_mode, channel_mode)
+        kernel, output_mode, channel_mode, output = choice
         rows = {f"Kernel row {i + 1}": "  ".join(f"{value:g}" for value in row) for i, row in enumerate(kernel)}
         return ToolResult(
             image=output,
             message="Applied the convolution kernel.",
-            details={"Operation": "Convolution", "Kernel size": f"{len(kernel)} × {len(kernel)}", **rows, "Colour images": channel_mode, "Output": output_mode},
+            details={
+                "Operation": "Convolution",
+                "Kernel size": f"{len(kernel)} × {len(kernel)}",
+                **rows,
+                "Colour images": channel_mode,
+                "Output": output_mode,
+            },
         )
