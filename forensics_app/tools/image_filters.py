@@ -32,13 +32,19 @@ EDGE_FILTERS = {
         "Horizontal edges": filters.prewitt_h,
         "Vertical edges": filters.prewitt_v,
     },
+    "Scharr edges": {
+        "Magnitude": filters.scharr,
+        "Horizontal edges": filters.scharr_h,
+        "Vertical edges": filters.scharr_v,
+    },
     "Roberts edges": {
         "Magnitude": filters.roberts,
         "Diagonal edges (/)": filters.roberts_pos_diag,
         "Diagonal edges (\\)": filters.roberts_neg_diag,
     },
 }
-FILTERS = ("Gaussian blur", *NEIGHBORHOOD_FILTERS, *EDGE_FILTERS)
+OTSU = "Otsu threshold"
+FILTERS = ("Gaussian blur", *NEIGHBORHOOD_FILTERS, *EDGE_FILTERS, OTSU)
 SHAPES = ("Square", "Disk", "Cross")
 EXPLANATIONS = {
     "Gaussian blur": "Weighted smoothing. A sigma of 0 skips that direction. Separating copies the shared sigma; re-linking uses X for both axes.",
@@ -46,7 +52,9 @@ EXPLANATIONS = {
     "Mean filter": "Local average over the selected neighborhood shape. Larger sizes produce more smoothing.",
     "Sobel edges": "Grayscale edge strength: brighter pixels indicate stronger intensity changes. Choose all edges or only horizontal/vertical ones.",
     "Prewitt edges": "Grayscale edge strength using the Prewitt operator. Choose all edges or only horizontal/vertical ones.",
+    "Scharr edges": "Grayscale edge strength using the Scharr operator, more rotationally symmetric than Sobel. Choose all edges or only horizontal/vertical ones.",
     "Roberts edges": "Grayscale edge strength using small diagonal difference kernels. Choose all edges or only one diagonal.",
+    OTSU: "Binary image: pixels brighter than the automatic Otsu threshold become white, the rest black.",
 }
 
 
@@ -97,7 +105,7 @@ def apply_filter(
     if image.width == 0 or image.height == 0:
         raise ValueError("The image must contain pixels.")
 
-    grayscale = image.mode in ("1", "L", "LA") or operation in EDGE_FILTERS
+    grayscale = image.mode in ("1", "L", "LA") or operation in EDGE_FILTERS or operation == OTSU
     # Rank filters require a writable array; PIL's np.asarray view is read-only.
     pixels = np.array(image.convert("L" if grayscale else "RGB"))
     if operation == "Gaussian blur":
@@ -115,6 +123,8 @@ def apply_filter(
                 [filter_function(pixels[..., channel], footprint=footprint) for channel in range(3)],
                 axis=-1,
             )
+    elif operation == OTSU:
+        output = (pixels > filters.threshold_otsu(pixels)) * 255.0
     else:
         # skimage scales the uint8 input to 0–1; map its magnitude back to 0–255.
         # Directional responses are signed (dark→bright or bright→dark); abs keeps both.
@@ -240,7 +250,7 @@ class _FilterDialog(simpledialog.Dialog):
                 self.separate_sigma_controls.grid()
         elif operation in NEIGHBORHOOD_FILTERS:
             self.neighborhood_controls.grid()
-        else:
+        elif operation in EDGE_FILTERS:
             self.edge_controls.grid()
             directions = tuple(EDGE_FILTERS[operation])
             self.direction_picker.configure(values=directions)
@@ -271,7 +281,7 @@ class _FilterDialog(simpledialog.Dialog):
                 sigma = (float(self.sigma_y.get()), float(self.sigma_x.get()))
         elif operation in NEIGHBORHOOD_FILTERS:
             size, shape = int(self.size.get()), self.shape.get()
-        else:
+        elif operation in EDGE_FILTERS:
             direction = self.direction.get()
         _validate_settings(operation, sigma, size, shape, direction)
         return operation, sigma, size, shape, direction
@@ -311,8 +321,10 @@ class _FilterDialog(simpledialog.Dialog):
                 details["Sigma X = Y (pixels)"] = sigma
         elif operation in NEIGHBORHOOD_FILTERS:
             details.update({"Neighborhood size": f"{size} × {size}", "Neighborhood shape": shape})
-        else:
+        elif operation in EDGE_FILTERS:
             details["Edge direction"] = direction
+        else:
+            details["Otsu threshold"] = float(filters.threshold_otsu(np.asarray(self.source.convert("L"))))
         self._preview_result = ToolResult(
             image=output, message=f"Applied {operation}.", details=details,
         )
@@ -343,7 +355,7 @@ class ImageFiltersTool(ForensicsTool):
     tool_id = "image_filters"
     title = "Image filters"
     category = "Filtering"
-    description = "Preview Gaussian, median, mean, Sobel, Prewitt, or Roberts filtering before applying."
+    description = "Preview Gaussian, median, mean, Sobel, Prewitt, Scharr, Roberts, or Otsu filtering before applying."
     works_on_histogram = False
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
