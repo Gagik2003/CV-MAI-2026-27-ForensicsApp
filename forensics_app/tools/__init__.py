@@ -9,6 +9,7 @@ from .image_filters import ImageFiltersTool
 from .image_info import ImageInfoTool
 from .masking import MaskingTool
 from .registry import ToolRegistry
+from .sharpening import SharpeningTool
 from .split_channel import SplitChannelTool
 from .swap_channels import SwapChannelsTool
 
@@ -26,6 +27,7 @@ def build_tool_registry() -> ToolRegistry:
             ConvolutionTool(),
             ImageFiltersTool(),
             EdgeDetectionTool(),
+            SharpeningTool(),
         ]
     )
 
