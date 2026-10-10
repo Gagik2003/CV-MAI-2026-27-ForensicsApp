@@ -4,7 +4,13 @@ import numpy as np
 from PIL import Image
 
 from forensics_app.core import ImageDocument
-from forensics_app.tools.convolution import convolve, sobel
+from forensics_app.tools.convolution import (
+    _is_integer_prefix,
+    _toggle_sign,
+    _without_leading_zeros,
+    convolve,
+    sobel,
+)
 from forensics_app.tools.grayscale import GrayscaleTool
 from forensics_app.tools.histogram import histogram_image
 from forensics_app.tools.registry import ToolRegistry
@@ -82,6 +88,22 @@ class ToolTests(unittest.TestCase):
         two_left = np.zeros((5, 5))
         two_left[2, 0] = 1  # convolution: out[x] = in[x + 2]
         self.assertEqual(list(convolve(image, two_left).getdata()), [30, 40, 50, 50, 50])
+
+    def test_kernel_cells_accept_only_integers(self) -> None:
+        for text in ("", "-", "0", "7", "-12", "100"):
+            self.assertTrue(_is_integer_prefix(text), text)
+        for text in ("a", "1a", "0.5", "1.", "--1", "1-", "+1", " 1", "1e3"):
+            self.assertFalse(_is_integer_prefix(text), text)
+
+    def test_kernel_cells_drop_leading_zeros(self) -> None:
+        cases = {"00": "0", "01": "1", "007": "7", "-05": "-5", "-0": "-", "0": "0", "100": "100", "-": "-", "": ""}
+        for text, expected in cases.items():
+            self.assertEqual(_without_leading_zeros(text), expected, text)
+
+    def test_minus_key_toggles_the_sign(self) -> None:
+        cases = {"3": "-3", "-3": "3", "12": "-12", "0": "-", "": "-", "-": ""}
+        for text, expected in cases.items():
+            self.assertEqual(_toggle_sign(text), expected, text)
 
     def test_registry_rejects_duplicate_ids(self) -> None:
         with self.assertRaises(ValueError):

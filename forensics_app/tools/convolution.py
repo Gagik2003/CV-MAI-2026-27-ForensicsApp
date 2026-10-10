@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -26,6 +27,7 @@ CHANNEL_HINTS = {
     CHANNELS[1]: "Convert to grayscale (luminance) first, then convolve once.",
 }
 ARROWS = {"Up": (-1, 0), "Down": (1, 0), "Left": (0, -1), "Right": (0, 1)}
+MISSING_VALUE = "Fill every kernel cell with an integer."
 PREVIEW_SIZE = (320, 240)
 PREVIEW_DELAY_MS = 250  # wait for a pause in typing before convolving the full image
 
@@ -78,6 +80,40 @@ def _configure_styles(widget: tk.Misc) -> None:
     style.map("SelectedPreset.TButton", background=[("active", "#335f9c")], foreground=[("active", "white")])
 
 
+def _is_integer_prefix(text: str) -> bool:
+    """Accept what a kernel cell may hold while typing: an integer, or "" / "-" on the way to one."""
+    return re.fullmatch(r"-?\d*", text) is not None
+
+
+def _without_leading_zeros(text: str) -> str:
+    """"01" -> "1", "00" -> "0", "-05" -> "-5"; "-0" -> "-" since minus zero is not a value."""
+    sign, digits = ("-", text[1:]) if text.startswith("-") else ("", text)
+    if digits:
+        digits = digits.lstrip("0") or ("" if sign else "0")
+    return sign + digits
+
+
+def _toggle_sign(text: str) -> str:
+    """What the minus key does to a cell: flip the sign, wherever the caret is ("0" becomes "-")."""
+    if text.startswith("-"):
+        return text[1:]
+    return "-" if text in ("", "0") else "-" + text
+
+
+def _on_cell_key(event: tk.Event) -> str | None:
+    entry: ttk.Entry = event.widget
+    if event.char == "-":
+        text = entry.get()
+        whole_value_selected = (entry.selection_present() and entry.index("sel.first") == 0
+                                and entry.index("sel.last") == len(text))
+        entry.delete(0, "end")  # never rejected: "" and "-n" are both valid cell contents
+        entry.insert(0, "-" if whole_value_selected else _toggle_sign(text))
+        return "break"
+    if event.char and event.char.isprintable() and not event.char.isdigit():
+        return "break"  # stop it before Tk deletes the selected value to make room for it
+    return None
+
+
 def _center_over(dialog: tk.Toplevel, window: tk.Misc) -> None:
     dialog.update_idletasks()
     x = window.winfo_rootx() + (window.winfo_width() - dialog.winfo_reqwidth()) // 2
@@ -114,11 +150,12 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
     presets.pack(fill="x", pady=(4, 12))
     preset_buttons: dict[str, ttk.Button] = {}
 
-    ttk.Label(kernel_side, text="Kernel (arrow keys move between cells)").pack(anchor="w")
+    ttk.Label(kernel_side, text="Kernel (integers; arrow keys move between cells)").pack(anchor="w")
     grid = ttk.Frame(kernel_side)
     grid.pack(pady=(4, 12))
     cells: list[list[tk.StringVar]] = []
     entries: list[list[ttk.Entry]] = []
+    only_integers = (dialog.register(_is_integer_prefix), "%P")  # %P: the text the edit would produce
 
     ttk.Label(options_side, text="Preview").pack(anchor="w")
     canvas = tk.Canvas(options_side, width=PREVIEW_SIZE[0], height=PREVIEW_SIZE[1],
@@ -132,7 +169,7 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
 
     def kernel_values() -> np.ndarray | None:
         try:
-            return np.array([[float(v.get()) for v in row] for row in cells])
+            return np.array([[int(v.get()) for v in row] for row in cells], dtype=np.float64)
         except ValueError:
             return None
 
@@ -160,7 +197,7 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
         current = settings()
         if current is None:
             preview = photo = None
-            status.configure(text="Every kernel cell must be a number.")
+            status.configure(text=MISSING_VALUE)
             return
         result = convolve(image, *current)
         preview = (current, result)
@@ -170,7 +207,9 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
         canvas.create_image(PREVIEW_SIZE[0] // 2, PREVIEW_SIZE[1] // 2, image=photo)
         status.configure(text="Preview of the full image; Apply keeps exactly this result.")
 
-    def on_cell_change(*_: object) -> None:
+    def on_cell_change(variable: tk.StringVar | None = None) -> None:
+        if variable is not None and (tidy := _without_leading_zeros(variable.get())) != variable.get():
+            variable.set(tidy)  # traces are paused inside a trace, so this does not re-enter
         highlight_matching_preset()
         schedule_preview()
 
@@ -213,12 +252,14 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
                 r, c = row + offset, column + offset
                 value = old[r][c] if 0 <= r < len(old) and 0 <= c < len(old) else "0"
                 variable = tk.StringVar(dialog, value=value)
-                entry = ttk.Entry(grid, textvariable=variable, width=6, justify="center", font=("TkDefaultFont", 14))
+                entry = ttk.Entry(grid, textvariable=variable, width=6, justify="center", font=("TkDefaultFont", 14),
+                                  validate="key", validatecommand=only_integers)
                 entry.grid(row=row, column=column, padx=3, pady=3, ipady=4)
                 for key in ARROWS:
                     entry.bind(f"<{key}>", lambda event, r=row, c=column: on_arrow(event, r, c))
                 entry.bind("<FocusIn>", lambda event: event.widget.select_range(0, "end"))  # typing replaces it
-                variable.trace_add("write", on_cell_change)
+                entry.bind("<KeyPress>", _on_cell_key)
+                variable.trace_add("write", lambda *_, v=variable: on_cell_change(v))
                 cells[row].append(variable)
                 entries[row].append(entry)
         on_cell_change()  # new cells start with values, so nothing else fires
@@ -264,7 +305,7 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
     def ok(_event: tk.Event | None = None) -> None:
         current = settings()
         if current is None:
-            messagebox.showerror("Convolution", "Every kernel cell must be a number.", parent=dialog)
+            messagebox.showerror("Convolution", MISSING_VALUE, parent=dialog)
             return
         up_to_date = preview is not None and np.array_equal(preview[0][0], current[0]) and preview[0][1:] == current[1:]
         result.append((*current, preview[1] if up_to_date else convolve(image, *current)))
