@@ -12,6 +12,7 @@ from scipy import ndimage
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
+from .dialogs import center_over
 
 
 SIZES = (3, 5, 7)
@@ -126,14 +127,6 @@ def _on_cell_key(event: tk.Event) -> str | None:
     if event.char and event.char.isprintable() and not event.char.isdigit():
         return "break"  # stop it before Tk deletes the selected value to make room for it
     return None
-
-
-def _center_over(dialog: tk.Toplevel, window: tk.Misc) -> None:
-    dialog.update_idletasks()
-    x = window.winfo_rootx() + (window.winfo_width() - dialog.winfo_reqwidth()) // 2
-    title_bar = window.winfo_rooty() - window.winfo_y()  # "+x+y" places the frame, not the content
-    y = window.winfo_rooty() + (window.winfo_height() - dialog.winfo_reqheight()) // 2 - title_bar
-    dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
 
 def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, str, bool, Image.Image] | None:
@@ -282,7 +275,7 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
 
     def resize() -> None:
         build_grid(size.get())
-        _center_over(dialog, parent.winfo_toplevel())
+        center_over(dialog, parent.winfo_toplevel())
         focus_cell(0, 0)
 
     for n in SIZES:
@@ -343,7 +336,7 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
     dialog.protocol("WM_DELETE_WINDOW", close)
 
     load(sobel("Horizontal", SIZES[0]))
-    _center_over(dialog, parent.winfo_toplevel())
+    center_over(dialog, parent.winfo_toplevel())
     dialog.deiconify()
     focus_cell(0, 0)
     dialog.grab_set()

@@ -11,6 +11,7 @@ from forensics_app.tools.convolution import (
     convolve,
     sobel,
 )
+from forensics_app.tools.edge_detection import VIEWS, detect_edges, show_edges
 from forensics_app.tools.grayscale import GrayscaleTool
 from forensics_app.tools.histogram import histogram_image
 from forensics_app.tools.registry import ToolRegistry
@@ -118,6 +119,53 @@ class ToolTests(unittest.TestCase):
         cases = {"3": "-3", "-3": "3", "12": "-12", "0": "-", "": "-", "-": ""}
         for text, expected in cases.items():
             self.assertEqual(_toggle_sign(text), expected, text)
+
+    def test_canny_finds_the_border_of_a_square(self) -> None:
+        image = Image.new("L", (40, 40), 0)
+        image.paste(255, (10, 10, 30, 30))
+        edges = detect_edges(image)
+        self.assertTrue(edges[20, 9:12].any())  # left side of the square
+        self.assertFalse(edges[20, 15:25].any())  # flat inside
+        self.assertGreater(detect_edges(image, sigma=0.5).sum(), 0)
+        with self.assertRaises(ValueError):
+            detect_edges(image, low=0.3, high=0.2)
+
+    def test_edge_views(self) -> None:
+        image = Image.new("RGB", (4, 1), (100, 100, 100))
+        edges = np.array([[False, True, False, False]])
+        self.assertEqual(show_edges(image, edges).mode, "L")
+        self.assertEqual(list(show_edges(image, edges).getdata()), [0, 255, 0, 0])
+        red = show_edges(image, edges, "Coloured edges")
+        self.assertEqual(red.getpixel((1, 0)), (255, 0, 0))
+        self.assertEqual(red.getpixel((0, 0)), (100, 100, 100))
+        overlay = show_edges(image, edges, "Transparent overlay")
+        self.assertEqual(overlay.getpixel((1, 0)), (178, 50, 50))
+        self.assertEqual(overlay.getpixel((0, 0)), (50, 50, 50))
+        dim = show_edges(image, edges, "Bright edges, dim image")
+        self.assertEqual(dim.getpixel((1, 0)), (255, 255, 255))
+        self.assertEqual(dim.getpixel((0, 0)), (40, 40, 40))
+        for view in VIEWS[1:]:
+            self.assertEqual(show_edges(image, edges, view).size, image.size, view)
+        self.assertEqual(show_edges(image, edges, "Coloured edges", colour="Blue").getpixel((1, 0)), (0, 0, 255))
+        self.assertEqual(show_edges(image, edges, "Transparent overlay", colour="Green", opacity=1).getpixel((1, 0)),
+                         (0, 255, 0))
+        self.assertEqual(show_edges(image, edges, "Bright edges, dim image", brightness=0).getpixel((0, 0)), (0, 0, 0))
+        square = np.zeros((9, 9), dtype=bool)
+        square[4, 2:7] = True
+        contour = show_edges(Image.new("L", (9, 9), 100), square, "Contour overlay")
+        self.assertEqual(contour.getpixel((4, 3)), (255, 0, 0))  # outline just above the edge line
+        self.assertEqual(contour.getpixel((0, 0)), (100, 100, 100))
+
+    def test_edge_thickness_widens_edges_but_not_the_edge_map(self) -> None:
+        image = Image.new("L", (9, 9), 100)
+        edges = np.zeros((9, 9), dtype=bool)
+        edges[4, 4] = True
+        thick = np.asarray(show_edges(image, edges, "Coloured edges", colour="Green", thickness=3))
+        self.assertEqual(int((thick == (0, 255, 0)).all(axis=2).sum()), 9)  # a 3 × 3 block
+        self.assertEqual(int(np.asarray(show_edges(image, edges, thickness=3)).astype(bool).sum()), 1)
+        wide = np.asarray(show_edges(image, edges, "Contour overlay", thickness=1)).copy()
+        wider = np.asarray(show_edges(image, edges, "Contour overlay", thickness=4))
+        self.assertGreater(int((wider == (255, 0, 0)).all(axis=2).sum()), int((wide == (255, 0, 0)).all(axis=2).sum()))
 
     def test_registry_rejects_duplicate_ids(self) -> None:
         with self.assertRaises(ValueError):
