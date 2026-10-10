@@ -20,10 +20,23 @@ NEIGHBORHOOD_FILTERS = {
     "Median filter": rank.median,
     "Mean filter": rank.mean,
 }
+# Directional variants only keep edges with that orientation in the image.
 EDGE_FILTERS = {
-    "Sobel edges": filters.sobel,
-    "Prewitt edges": filters.prewitt,
-    "Roberts edges": filters.roberts,
+    "Sobel edges": {
+        "Magnitude": filters.sobel,
+        "Horizontal edges": filters.sobel_h,
+        "Vertical edges": filters.sobel_v,
+    },
+    "Prewitt edges": {
+        "Magnitude": filters.prewitt,
+        "Horizontal edges": filters.prewitt_h,
+        "Vertical edges": filters.prewitt_v,
+    },
+    "Roberts edges": {
+        "Magnitude": filters.roberts,
+        "Diagonal edges (/)": filters.roberts_pos_diag,
+        "Diagonal edges (\\)": filters.roberts_neg_diag,
+    },
 }
 FILTERS = ("Gaussian blur", *NEIGHBORHOOD_FILTERS, *EDGE_FILTERS)
 SHAPES = ("Square", "Disk", "Cross")
@@ -31,14 +44,15 @@ EXPLANATIONS = {
     "Gaussian blur": "Weighted smoothing. A sigma of 0 skips that direction. Separating copies the shared sigma; re-linking uses X for both axes.",
     "Median filter": "Local median over the selected neighborhood shape, useful for isolated bright/dark noise.",
     "Mean filter": "Local average over the selected neighborhood shape. Larger sizes produce more smoothing.",
-    "Sobel edges": "Grayscale edge magnitude: brighter pixels indicate stronger intensity changes. No parameters.",
-    "Prewitt edges": "Grayscale edge magnitude using the Prewitt operator. No parameters.",
-    "Roberts edges": "Grayscale edge magnitude using small diagonal difference kernels. No parameters.",
+    "Sobel edges": "Grayscale edge strength: brighter pixels indicate stronger intensity changes. Choose all edges or only horizontal/vertical ones.",
+    "Prewitt edges": "Grayscale edge strength using the Prewitt operator. Choose all edges or only horizontal/vertical ones.",
+    "Roberts edges": "Grayscale edge strength using small diagonal difference kernels. Choose all edges or only one diagonal.",
 }
 
 
 def _validate_settings(
-    operation: str, sigma: float | tuple[float, float], size: int, shape: str
+    operation: str, sigma: float | tuple[float, float], size: int, shape: str,
+    direction: str,
 ) -> None:
     if operation not in FILTERS:
         raise ValueError("Choose one of the available filters.")
@@ -53,6 +67,8 @@ def _validate_settings(
             raise ValueError("Neighborhood size must be an odd integer between 1 and 31.")
         if shape not in SHAPES:
             raise ValueError("Choose Square, Disk, or Cross for the neighborhood shape.")
+    if operation in EDGE_FILTERS and direction not in EDGE_FILTERS[operation]:
+        raise ValueError(f"Choose one of: {', '.join(EDGE_FILTERS[operation])}.")
 
 
 def _footprint(size: int, shape: str) -> np.ndarray:
@@ -67,15 +83,15 @@ def _footprint(size: int, shape: str) -> np.ndarray:
 
 def apply_filter(
     image: Image.Image, operation: str, sigma: float | tuple[float, float] = 1.0,
-    size: int = 3, shape: str = "Square",
+    size: int = 3, shape: str = "Square", direction: str = "Magnitude",
 ) -> Image.Image:
     """Filter spatial dimensions without mixing RGB bands or changing image size.
 
-    Smoothing preserves color; edge filters compute a grayscale magnitude.
+    Smoothing preserves color; edge filters compute a grayscale edge strength.
     Sigma is shared by both spatial axes, or a (sigma_y, sigma_x) pair.
     An existing alpha channel is copied unchanged, not filtered.
     """
-    _validate_settings(operation, sigma, size, shape)
+    _validate_settings(operation, sigma, size, shape, direction)
     if image.mode not in ("1", "L", "LA", "P", "RGB", "RGBA"):
         raise ValueError("Use an 8-bit grayscale or RGB image for filtering.")
     if image.width == 0 or image.height == 0:
@@ -101,7 +117,8 @@ def apply_filter(
             )
     else:
         # skimage scales the uint8 input to 0–1; map its magnitude back to 0–255.
-        output = EDGE_FILTERS[operation](pixels) * 255.0
+        # Directional responses are signed (dark→bright or bright→dark); abs keeps both.
+        output = np.abs(EDGE_FILTERS[operation][direction](pixels)) * 255.0
 
     result = Image.fromarray(np.rint(np.clip(output, 0, 255)).astype(np.uint8))
     if "A" in image.getbands() or (image.mode == "P" and "transparency" in image.info):
@@ -126,6 +143,7 @@ class _FilterDialog(simpledialog.Dialog):
         self.linked_sigmas = tk.BooleanVar(master, value=True)
         self.size = tk.StringVar(master, value="3")
         self.shape = tk.StringVar(master, value=SHAPES[0])
+        self.direction = tk.StringVar(master, value="Magnitude")
         picker = ttk.Combobox(
             master, textvariable=self.selection, values=FILTERS, state="readonly", width=30,
         )
@@ -171,6 +189,16 @@ class _FilterDialog(simpledialog.Dialog):
         ttk.Label(self.neighborhood_controls, text="The shape fits inside a size × size square.").grid(
             row=2, column=0, columnspan=2, sticky="w", padx=5, pady=5,
         )
+
+        self.edge_controls = ttk.Frame(master)
+        self.edge_controls.grid(row=1, column=0, columnspan=2, sticky="w")
+        ttk.Label(self.edge_controls, text="Edge direction:").grid(
+            row=0, column=0, sticky="w", padx=5, pady=5,
+        )
+        self.direction_picker = ttk.Combobox(
+            self.edge_controls, textvariable=self.direction, state="readonly", width=20,
+        )
+        self.direction_picker.grid(row=0, column=1, padx=5, pady=5)
         self.explanation = ttk.Label(master, wraplength=660)
         self.explanation.grid(row=2, column=0, columnspan=2, sticky="w", padx=5, pady=8)
         views = ttk.Frame(master)
@@ -189,7 +217,9 @@ class _FilterDialog(simpledialog.Dialog):
             row=4, column=0, columnspan=2, sticky="w", padx=5, pady=8,
         )
         self._show_image(0, self.source)
-        for variable in (self.sigma, self.sigma_x, self.sigma_y, self.size, self.shape):
+        for variable in (
+            self.sigma, self.sigma_x, self.sigma_y, self.size, self.shape, self.direction,
+        ):
             variable.trace_add("write", self._schedule_preview)
         self.selection.trace_add("write", self._operation_changed)
         self._operation_changed()
@@ -199,6 +229,7 @@ class _FilterDialog(simpledialog.Dialog):
         operation = self.selection.get()
         self.gaussian_controls.grid_remove()
         self.neighborhood_controls.grid_remove()
+        self.edge_controls.grid_remove()
         if operation == "Gaussian blur":
             self.gaussian_controls.grid()
             self.shared_sigma_controls.grid_remove()
@@ -209,6 +240,13 @@ class _FilterDialog(simpledialog.Dialog):
                 self.separate_sigma_controls.grid()
         elif operation in NEIGHBORHOOD_FILTERS:
             self.neighborhood_controls.grid()
+        else:
+            self.edge_controls.grid()
+            directions = tuple(EDGE_FILTERS[operation])
+            self.direction_picker.configure(values=directions)
+            # Keep the direction when switching Sobel ↔ Prewitt; Roberts has its own.
+            if self.direction.get() not in directions:
+                self.direction.set(directions[0])
         self.explanation.configure(text=EXPLANATIONS[operation])
         self._schedule_preview()
 
@@ -221,10 +259,10 @@ class _FilterDialog(simpledialog.Dialog):
             self.sigma_y.set(self.sigma.get())
         self._operation_changed()
 
-    def _settings(self) -> tuple[str, float | tuple[float, float], int, str]:
+    def _settings(self) -> tuple[str, float | tuple[float, float], int, str, str]:
         operation = self.selection.get()
         sigma: float | tuple[float, float] = 1.0
-        size, shape = 3, SHAPES[0]
+        size, shape, direction = 3, SHAPES[0], "Magnitude"
         if operation == "Gaussian blur":
             if self.linked_sigmas.get():
                 sigma = float(self.sigma.get())
@@ -233,8 +271,10 @@ class _FilterDialog(simpledialog.Dialog):
                 sigma = (float(self.sigma_y.get()), float(self.sigma_x.get()))
         elif operation in NEIGHBORHOOD_FILTERS:
             size, shape = int(self.size.get()), self.shape.get()
-        _validate_settings(operation, sigma, size, shape)
-        return operation, sigma, size, shape
+        else:
+            direction = self.direction.get()
+        _validate_settings(operation, sigma, size, shape, direction)
+        return operation, sigma, size, shape, direction
 
     def _schedule_preview(self, *_args: str) -> None:
         self._preview_result = None
@@ -255,8 +295,8 @@ class _FilterDialog(simpledialog.Dialog):
     def _update_preview(self) -> bool:
         self._preview_after = None
         try:
-            operation, sigma, size, shape = self._settings()
-            output = apply_filter(self.source, operation, sigma, size, shape)
+            operation, sigma, size, shape, direction = self._settings()
+            output = apply_filter(self.source, operation, sigma, size, shape, direction)
         except (ValueError, OSError) as error:
             self._preview_result = None
             self.image_canvases[1].delete("all")
@@ -271,6 +311,8 @@ class _FilterDialog(simpledialog.Dialog):
                 details["Sigma X = Y (pixels)"] = sigma
         elif operation in NEIGHBORHOOD_FILTERS:
             details.update({"Neighborhood size": f"{size} × {size}", "Neighborhood shape": shape})
+        else:
+            details["Edge direction"] = direction
         self._preview_result = ToolResult(
             image=output, message=f"Applied {operation}.", details=details,
         )
