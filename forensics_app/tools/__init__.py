@@ -2,6 +2,7 @@
 
 from .contrast_stretching import ContrastStretchingTool
 from .convolution import ConvolutionTool
+from .edge_detection import EdgeDetectionTool
 from .grayscale import GrayscaleTool
 from .histogram import HistogramTool
 from .image_info import ImageInfoTool
@@ -22,6 +23,7 @@ def build_tool_registry() -> ToolRegistry:
             HistogramTool(),
             ContrastStretchingTool(),
             ConvolutionTool(),
+            EdgeDetectionTool(),
         ]
     )
 
