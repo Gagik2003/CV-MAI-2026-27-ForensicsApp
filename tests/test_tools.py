@@ -76,6 +76,20 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(convolve(image, horizontal, channels="Grayscale").getpixel((1, 0)), 0)
         self.assertEqual(convolve(image, horizontal, channels="Mean of channels").getpixel((1, 0)), 170)
 
+    def test_normalized_ones_kernel_is_a_mean_blur(self) -> None:
+        image = Image.frombytes("L", (5, 1), bytes([0, 0, 90, 0, 0]))
+        ones = np.ones((3, 3))
+        self.assertEqual(list(convolve(image, ones, normalize=True).getdata()), [0, 30, 30, 30, 0])
+        self.assertEqual(list(convolve(image, ones).getdata()), [0, 255, 255, 255, 0])  # sum of 3 rows of 90
+        flat = Image.new("RGB", (4, 4), (40, 80, 120))
+        self.assertEqual(convolve(flat, np.ones((7, 7)), normalize=True).getpixel((2, 2)), 80)
+
+    def test_normalize_leaves_zero_sum_kernels_alone(self) -> None:
+        step = Image.frombytes("L", (4, 1), bytes([0, 0, 10, 10]))
+        horizontal = sobel("Horizontal")
+        self.assertEqual(list(convolve(step, horizontal, normalize=True).getdata()),
+                         list(convolve(step, horizontal).getdata()))
+
     def test_sobel_kernels_match_opencv(self) -> None:
         self.assertEqual(sobel("Horizontal", 3).tolist(), [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
         self.assertEqual(sobel("Vertical", 3).tolist(), [[-1, -2, -1], [0, 0, 0], [1, 2, 1]])

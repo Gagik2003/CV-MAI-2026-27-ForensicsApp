@@ -52,15 +52,24 @@ def _binomial(order: int) -> np.ndarray:
 
 
 def convolve(
-    image: Image.Image, kernel: np.ndarray, output: str = OUTPUTS[0], channels: str = CHANNELS[0]
+    image: Image.Image,
+    kernel: np.ndarray,
+    output: str = OUTPUTS[0],
+    channels: str = CHANNELS[0],
+    normalize: bool = False,
 ) -> Image.Image:
     """Return a grayscale image of ``image`` convolved with ``kernel`` (odd size).
+
+    ``normalize`` divides the kernel by the sum of its weights, so all 1s give the neighbourhood's
+    mean (a box blur); a kernel whose weights sum to 0, like Sobel, is left unchanged.
 
     ``scipy.ndimage.convolve`` flips the kernel, as convolution requires; borders repeat the edge pixels.
     Negative responses become positive with "Absolute value" and black with "Clip to 0–255".
     "Mean of channels" convolves R, G and B separately and averages the three 0–255 results;
     "Grayscale" converts the image to luminance first.
     """
+    if normalize and kernel.sum() != 0:
+        kernel = kernel / kernel.sum()
     grayscale = channels == CHANNELS[1] or image.mode in ("1", "L")
     pixels = np.asarray(image.convert("L" if grayscale else "RGB"), dtype=np.float64)
     weights = kernel if pixels.ndim == 2 else kernel[..., np.newaxis]  # never mix the colour channels
@@ -71,6 +80,11 @@ def convolve(
     if result.ndim == 3:
         result = result.mean(axis=2)
     return Image.fromarray(np.rint(result).astype(np.uint8))
+
+
+def _normalization_note(kernel: np.ndarray) -> str:
+    total = kernel.sum()
+    return f"Kernel divided by {total:g}." if total != 0 else "Weights sum to 0, so normalizing changes nothing."
 
 
 def _configure_styles(widget: tk.Misc) -> None:
@@ -122,10 +136,11 @@ def _center_over(dialog: tk.Toplevel, window: tk.Misc) -> None:
     dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
 
-def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, str, Image.Image] | None:
+def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, str, bool, Image.Image] | None:
     """Let the user pick a size and type a kernel or load a preset while previewing the result on ``image``.
 
-    Returns the kernel, output mode, colour mode and the convolved image, or ``None`` if cancelled.
+    Returns the kernel, output mode, colour mode, whether to normalize and the convolved image,
+    or ``None`` if cancelled.
     """
     dialog = tk.Toplevel(parent)
     dialog.withdraw()  # shown once centred, so it never flashes at the default position
@@ -164,7 +179,7 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
     status = ttk.Label(options_side, foreground="#666666", wraplength=PREVIEW_SIZE[0])
     status.pack(anchor="w", pady=(0, 12))
     preview_job: str | None = None
-    preview: tuple[tuple[np.ndarray, str, str], Image.Image] | None = None  # (settings, full-size result)
+    preview: tuple[tuple[np.ndarray, str, str, bool], Image.Image] | None = None  # (settings, full-size result)
     photo: ImageTk.PhotoImage | None = None
 
     def kernel_values() -> np.ndarray | None:
@@ -173,9 +188,9 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
         except ValueError:
             return None
 
-    def settings() -> tuple[np.ndarray, str, str] | None:
+    def settings() -> tuple[np.ndarray, str, str, bool] | None:
         kernel = kernel_values()
-        return None if kernel is None else (kernel, output.get(), channels.get())
+        return None if kernel is None else (kernel, output.get(), channels.get(), normalize.get())
 
     def highlight_matching_preset() -> None:
         kernel = kernel_values()
@@ -205,7 +220,8 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
         thumbnail.thumbnail(PREVIEW_SIZE, Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(thumbnail, master=dialog)
         canvas.create_image(PREVIEW_SIZE[0] // 2, PREVIEW_SIZE[1] // 2, image=photo)
-        status.configure(text="Preview of the full image; Apply keeps exactly this result.")
+        note = _normalization_note(current[0]) + " " if current[3] else ""
+        status.configure(text=f"{note}Preview of the full image; Apply keeps exactly this result.")
 
     def on_cell_change(variable: tk.StringVar | None = None) -> None:
         if variable is not None and (tidy := _without_leading_zeros(variable.get())) != variable.get():
@@ -279,6 +295,13 @@ def ask_kernel(parent: tk.Misc, image: Image.Image) -> tuple[np.ndarray, str, st
         preset_buttons[name] = button
     build_grid(SIZES[0])
 
+    normalize = tk.BooleanVar(dialog, value=False)
+    ttk.Checkbutton(kernel_side, text="Normalize (÷ sum of weights)", variable=normalize).pack(anchor="w")
+    ttk.Label(kernel_side, text="All 1s then give the neighbourhood's average (a blur). "
+              "Kernels whose weights sum to 0, like Sobel, are not changed.",
+              foreground="#666666", wraplength=250).pack(anchor="w", pady=(2, 0))
+    normalize.trace_add("write", schedule_preview)
+
     def add_choice(title: str, options: tuple[str, ...], hints: dict[str, str]) -> tk.StringVar:
         ttk.Label(options_side, text=title).pack(anchor="w")
         choice = tk.StringVar(dialog, value=options[0])
@@ -340,7 +363,7 @@ class ConvolutionTool(ForensicsTool):
         choice = ask_kernel(parent, document.current)
         if choice is None:
             return None
-        kernel, output_mode, channel_mode, output = choice
+        kernel, output_mode, channel_mode, normalize, output = choice
         rows = {f"Kernel row {i + 1}": "  ".join(f"{value:g}" for value in row) for i, row in enumerate(kernel)}
         return ToolResult(
             image=output,
@@ -351,5 +374,6 @@ class ConvolutionTool(ForensicsTool):
                 **rows,
                 "Colour images": channel_mode,
                 "Output": output_mode,
+                "Normalized": _normalization_note(kernel) if normalize else "No",
             },
         )
