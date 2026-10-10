@@ -156,6 +156,15 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(contour.getpixel((4, 3)), (255, 0, 0))  # outline just above the edge line
         self.assertEqual(contour.getpixel((0, 0)), (100, 100, 100))
 
+    def test_edges_are_drawn_on_the_colour_image_by_default(self) -> None:
+        image = Image.new("RGB", (3, 1), (200, 100, 0))
+        edges = np.array([[False, True, False]])
+        self.assertEqual(show_edges(image, edges, "Coloured edges", colour="Blue").getpixel((0, 0)), (200, 100, 0))
+        self.assertEqual(show_edges(image, edges, "Coloured edges", colour="Blue").getpixel((1, 0)), (0, 0, 255))
+        gray = show_edges(image, edges, "Coloured edges", base="Grayscale").getpixel((0, 0))
+        self.assertEqual(gray, (118, 118, 118))  # luminance of the orange: 0.299 × 200 + 0.587 × 100
+        self.assertEqual(show_edges(image, edges, "Bright edges, dim image").getpixel((0, 0)), (80, 40, 0))
+
     def test_edge_thickness_widens_edges_but_not_the_edge_map(self) -> None:
         image = Image.new("L", (9, 9), 100)
         edges = np.zeros((9, 9), dtype=bool)

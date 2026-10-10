@@ -30,6 +30,7 @@ STYLE_SETTINGS = {
 }
 INTEGER_SETTINGS = {"thickness"}
 COLOURS = {"Red": (1.0, 0.0, 0.0), "Green": (0.0, 1.0, 0.0), "Blue": (0.0, 0.0, 1.0), "White": (1.0, 1.0, 1.0)}
+BASES = ("Colour image", "Grayscale")  # what the edges are drawn on; Canny itself always uses grayscale
 VIEWS = ("Off (edges only)", "Coloured edges", "Transparent overlay", "Bright edges, dim image", "Contour overlay")
 # The settings each view offers, with its starting colour; the numbers start at STYLE_SETTINGS defaults.
 VIEW_SETTINGS: dict[str, tuple[str | None, tuple[str, ...]]] = {
@@ -58,8 +59,9 @@ def show_edges(
     thickness: int = 1,
     opacity: float = 0.5,
     brightness: float = 0.4,
+    base: str = BASES[0],
 ) -> Image.Image:
-    """Return the edge map alone ("Off") or drawn over the grayscale image in the chosen style.
+    """Return the edge map alone ("Off") or drawn over the image (``base``: in colour or grayscale).
 
     ``colour`` defaults to the view's own (white for bright edges, otherwise red); ``thickness`` widens
     the edges (or, for contours, the line); ``opacity`` is the overlay's strength and ``brightness``
@@ -70,7 +72,10 @@ def show_edges(
     if view not in VIEW_SETTINGS:
         raise ValueError(f"Unknown view: {view}")
     colour = colour or VIEW_SETTINGS[view][0]
-    rgb = np.repeat(_gray(image)[..., np.newaxis], 3, axis=2)
+    if base == BASES[0]:
+        rgb = np.asarray(image.convert("RGB"), dtype=np.float64) / 255.0
+    else:
+        rgb = np.repeat(_gray(image)[..., np.newaxis], 3, axis=2)
     if view == "Contour overlay":
         result = Image.fromarray(np.rint(rgb * 255).astype(np.uint8))
         draw = ImageDraw.Draw(result)
@@ -95,8 +100,8 @@ def show_edges(
 
 def setting_label(view: str, name: str) -> str:
     """How a view setting is named on screen; for contours the thickness is a line width."""
-    if name == "colour":
-        return "Colour"
+    if name in ("colour", "base"):
+        return {"colour": "Colour", "base": "Drawn on"}[name]
     return "Line width (px)" if view == "Contour overlay" and name == "thickness" else STYLE_SETTINGS[name][0]
 
 
@@ -198,6 +203,14 @@ def ask_edges(
     view = tk.StringVar(dialog, value=VIEWS[0])
     for option in VIEWS:
         ttk.Radiobutton(controls, text=option, value=option, variable=view).pack(anchor="w", pady=(2, 0))
+    base_row = ttk.Frame(controls)
+    base_row.pack(fill="x", pady=(8, 0))
+    ttk.Label(base_row, text="Draw on", width=17).pack(side="left")
+    base = tk.StringVar(dialog, value=BASES[0])
+    for option in BASES:
+        ttk.Radiobutton(base_row, text=option, value=option, variable=base,
+                        style="Toolbutton").pack(side="left", padx=(0, 4))
+    base.trace_add("write", lambda *_: schedule_preview())
 
     # Each view keeps its own settings in its own frame; all frames share one grid cell so the
     # window keeps its size, and the selected view's frame is raised on top.
@@ -246,7 +259,7 @@ def ask_edges(
         return current
 
     def style() -> dict[str, Any]:
-        settings: dict[str, Any] = {}
+        settings: dict[str, Any] = {} if view.get() == VIEWS[0] else {"base": base.get()}
         for name, variable in view_values[view.get()].items():
             if name == "colour":
                 settings[name] = variable.get()
