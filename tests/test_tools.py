@@ -1,8 +1,10 @@
 import unittest
 
+import numpy as np
 from PIL import Image
 
 from forensics_app.core import ImageDocument
+from forensics_app.tools.convolution import convolve, sobel
 from forensics_app.tools.grayscale import GrayscaleTool
 from forensics_app.tools.histogram import histogram_image
 from forensics_app.tools.registry import ToolRegistry
@@ -40,6 +42,46 @@ class ToolTests(unittest.TestCase):
         document.apply(histogram_image(source))
         result = SplitChannelTool("R").run(None, document)
         self.assertIs(result.image.info["histogram_source"], source)
+
+    def test_convolution_flips_the_kernel(self) -> None:
+        image = Image.frombytes("L", (3, 1), bytes([10, 20, 30]))
+        left_cell = np.array([[0, 0, 0], [1, 0, 0], [0, 0, 0]])
+        # convolution: out[x] = in[x + 1]; correlation (no flip) would give in[x - 1] = [10, 10, 20]
+        self.assertEqual(list(convolve(image, left_cell).getdata()), [20, 30, 30])
+
+    def test_convolution_output_modes_handle_negative_responses(self) -> None:
+        step = Image.frombytes("L", (4, 1), bytes([0, 0, 10, 10]))
+        horizontal = sobel("Horizontal")
+        self.assertEqual(list(convolve(step, horizontal, "Absolute value").getdata()), [0, 40, 40, 0])
+        self.assertEqual(list(convolve(step, horizontal, "Clip to 0–255").getdata()), [0, 0, 0, 0])
+        self.assertEqual(list(convolve(step, sobel("Vertical")).getdata()), [0, 0, 0, 0])
+
+    def test_convolution_colour_modes_return_one_channel(self) -> None:
+        image = Image.new("RGB", (3, 3), (10, 20, 30))
+        identity = np.zeros((3, 3))
+        identity[1, 1] = 1
+        self.assertEqual(convolve(image, identity, channels="Mean of channels").getpixel((1, 1)), 20)
+        self.assertEqual(convolve(image, identity, channels="Grayscale").getpixel((1, 1)), 18)  # luminance
+
+    def test_channel_mean_finds_edges_between_equally_bright_colours(self) -> None:
+        image = Image.new("RGB", (4, 1), (0, 100, 0))
+        image.paste((196, 0, 0), (2, 0, 4, 1))  # same luminance as the green half
+        horizontal = sobel("Horizontal")
+        self.assertEqual(convolve(image, horizontal, channels="Grayscale").getpixel((1, 0)), 0)
+        self.assertEqual(convolve(image, horizontal, channels="Mean of channels").getpixel((1, 0)), 170)
+
+    def test_sobel_kernels_match_opencv(self) -> None:
+        self.assertEqual(sobel("Horizontal", 3).tolist(), [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+        self.assertEqual(sobel("Vertical", 3).tolist(), [[-1, -2, -1], [0, 0, 0], [1, 2, 1]])
+        self.assertEqual(sobel("Horizontal", 5)[2].tolist(), [-6, -12, 0, 12, 6])
+        self.assertEqual(sobel("Horizontal", 7)[0].tolist(), [-1, -4, -5, 0, 5, 4, 1])
+        self.assertTrue(np.array_equal(sobel("Vertical", 5), sobel("Horizontal", 5).T))
+
+    def test_convolution_accepts_larger_kernels(self) -> None:
+        image = Image.frombytes("L", (5, 1), bytes([10, 20, 30, 40, 50]))
+        two_left = np.zeros((5, 5))
+        two_left[2, 0] = 1  # convolution: out[x] = in[x + 2]
+        self.assertEqual(list(convolve(image, two_left).getdata()), [30, 40, 50, 50, 50])
 
     def test_registry_rejects_duplicate_ids(self) -> None:
         with self.assertRaises(ValueError):
