@@ -2,10 +2,12 @@ import unittest
 
 import numpy as np
 from PIL import Image
+from scipy import ndimage
 
 from forensics_app.core import ImageDocument
 from forensics_app.tools.convolution import (
     _is_integer_prefix,
+    _is_kernel_size_prefix,
     _toggle_sign,
     _without_leading_zeros,
     convolve,
@@ -85,11 +87,34 @@ class ToolTests(unittest.TestCase):
         flat = Image.new("RGB", (4, 4), (40, 80, 120))
         self.assertEqual(convolve(flat, np.ones((7, 7)), normalize=True).getpixel((2, 2)), 80)
 
-    def test_normalize_leaves_zero_sum_kernels_alone(self) -> None:
+    def test_normalize_scales_zero_sum_kernels_by_their_positive_weights(self) -> None:
         step = Image.frombytes("L", (4, 1), bytes([0, 0, 10, 10]))
-        horizontal = sobel("Horizontal")
-        self.assertEqual(list(convolve(step, horizontal, normalize=True).getdata()),
-                         list(convolve(step, horizontal).getdata()))
+        self.assertEqual(list(convolve(step, sobel("Horizontal"), normalize=True).getdata()), [0, 10, 10, 0])  # 40 / 4
+        edge = np.zeros((40, 40), dtype=np.uint8)
+        edge[:, 20:] = 255
+        for size in (3, 7, 15):  # a full black-to-white edge peaks at exactly 255, whatever the size
+            result = np.asarray(convolve(Image.fromarray(edge), sobel("Horizontal", size), normalize=True))
+            self.assertEqual(int(result.max()), 255, size)
+            self.assertEqual(int(result[:, 0].max()), 0, size)  # flat areas stay black
+        self.assertEqual(list(convolve(step, np.zeros((3, 3)), normalize=True).getdata()), [0, 0, 0, 0])
+
+    def test_slide_box_blurs_with_rectangular_kernels(self) -> None:
+        # Set 3.1: np.ones((1, 15)) / 15, its transpose, and np.ones((15, 15)) / 225
+        rng = np.random.default_rng(0)
+        pixels = rng.integers(0, 256, (40, 50)).astype(np.uint8)
+        image = Image.fromarray(pixels)
+        for shape in ((1, 15), (15, 1), (15, 15)):
+            expected = ndimage.convolve(pixels.astype(np.float64), np.ones(shape) / np.prod(shape), mode="nearest")
+            result = np.asarray(convolve(image, np.ones(shape), normalize=True))
+            self.assertTrue(np.array_equal(result, np.rint(expected).astype(np.uint8)), shape)
+
+    def test_even_sized_kernels(self) -> None:
+        rng = np.random.default_rng(1)
+        pixels = rng.integers(0, 256, (20, 30)).astype(np.uint8)
+        for shape in ((2, 2), (1, 4), (6, 3)):
+            expected = ndimage.convolve(pixels.astype(np.float64), np.ones(shape) / np.prod(shape), mode="nearest")
+            result = np.asarray(convolve(Image.fromarray(pixels), np.ones(shape), normalize=True))
+            self.assertTrue(np.array_equal(result, np.rint(expected).astype(np.uint8)), shape)
 
     def test_sobel_kernels_match_opencv(self) -> None:
         self.assertEqual(sobel("Horizontal", 3).tolist(), [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
@@ -109,6 +134,12 @@ class ToolTests(unittest.TestCase):
             self.assertTrue(_is_integer_prefix(text), text)
         for text in ("a", "1a", "0.5", "1.", "--1", "1-", "+1", " 1", "1e3"):
             self.assertFalse(_is_integer_prefix(text), text)
+
+    def test_kernel_size_boxes_accept_only_1_to_15(self) -> None:
+        for text in ("", "1", "2", "9", "10", "15"):
+            self.assertTrue(_is_kernel_size_prefix(text), text)
+        for text in ("0", "01", "16", "99", "100", "-1", "a", "1.5", " 3"):
+            self.assertFalse(_is_kernel_size_prefix(text), text)
 
     def test_kernel_cells_drop_leading_zeros(self) -> None:
         cases = {"00": "0", "01": "1", "007": "7", "-05": "-5", "-0": "-", "0": "0", "100": "100", "-": "-", "": ""}
