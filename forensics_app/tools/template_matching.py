@@ -21,20 +21,27 @@ def _grayscale_pixels(image: Image.Image) -> np.ndarray:
     return np.asarray(image.convert("L"), dtype=float) / 255
 
 
-def rotate_template(template: Image.Image, angle: float = 0.0) -> np.ndarray:
-    """Grayscale template rotated counter-clockwise about its centre, keeping its size.
-
-    As with transform.rotate on the slide, the corners left uncovered become black (0).
-    """
-    return transform.rotate(_grayscale_pixels(template), angle)
+# How transform.rotate fills the corners a rotation leaves uncovered. Black corners (the
+# slide's default) count against every position, so extending the border matches better.
+CORNER_FILLS = {"Extend edges": "edge", "Black (as on the slide)": "constant"}
+DEFAULT_FILL = "Extend edges"
 
 
-def correlation_map(image: Image.Image, template: Image.Image, angle: float = 0.0) -> np.ndarray:
+def rotate_template(
+    template: Image.Image, angle: float = 0.0, fill: str = DEFAULT_FILL,
+) -> np.ndarray:
+    """Grayscale template rotated counter-clockwise about its centre, keeping its size."""
+    return transform.rotate(_grayscale_pixels(template), angle, mode=CORNER_FILLS[fill])
+
+
+def correlation_map(
+    image: Image.Image, template: Image.Image, angle: float = 0.0, fill: str = DEFAULT_FILL,
+) -> np.ndarray:
     """Normalized cross-correlation of the template at every pixel, between -1 and 1.
 
     pad_input=True gives a map with the image's dimensions, centred on each pixel.
     """
-    pixels, template_pixels = _grayscale_pixels(image), rotate_template(template, angle)
+    pixels, template_pixels = _grayscale_pixels(image), rotate_template(template, angle, fill)
     if template_pixels.shape[0] > pixels.shape[0] or template_pixels.shape[1] > pixels.shape[1]:
         raise ValueError("The template must not be larger than the image.")
     if template_pixels.size == 0:
@@ -96,8 +103,10 @@ class _TemplateMatchingDialog(simpledialog.Dialog):
             spinboxes.append(spinbox)
         self.view = tk.StringVar(master, value=DEFAULT_VIEW)
         self.colour = tk.StringVar(master, value=DEFAULT_COLOUR)
+        self.fill = tk.StringVar(master, value=DEFAULT_FILL)
         for row, (label, variable, values, width) in enumerate((
             ("Superimposition", self.view, VIEWS, 22), ("Colour", self.colour, tuple(COLOURS), 8),
+            ("Corner fill", self.fill, tuple(CORNER_FILLS), 22),
         )):
             ttk.Label(controls, text=label + ":").grid(row=row, column=2, sticky="w", padx=(20, 0))
             ttk.Combobox(controls, textvariable=variable, values=values, state="readonly",
@@ -125,7 +134,8 @@ class _TemplateMatchingDialog(simpledialog.Dialog):
         ttk.Combobox(options, textvariable=self.choice, values=APPLY_OPTIONS,
                      state="readonly", width=28).grid(row=0, column=1)
 
-        for variable in (*self.values.values(), self.view, self.colour, self.choice):
+        for variable in (*self.values.values(), self.view, self.colour, self.fill,
+                         self.choice):
             variable.trace_add("write", self._schedule_preview)
         self._schedule_preview()
         return spinboxes[0]
@@ -164,9 +174,9 @@ class _TemplateMatchingDialog(simpledialog.Dialog):
         self._preview_after = None
         try:
             angle, threshold, thickness = self._settings()
-            template = Image.fromarray(np.rint(rotate_template(self.template, angle) * 255)
+            template = Image.fromarray(np.rint(rotate_template(self.template, angle, self.fill.get()) * 255)
                                        .astype(np.uint8))
-            correlation = correlation_map(self.source, self.template, angle)
+            correlation = correlation_map(self.source, self.template, angle, self.fill.get())
         except ValueError as error:
             self._preview_result = None
             for index in (1, 2, 3):
@@ -189,7 +199,7 @@ class _TemplateMatchingDialog(simpledialog.Dialog):
             f"score at least {threshold:g}. Scores range from -1 to 1; the correlation image "
             "shows its lowest score as black and its highest as white."
             + (" The rotated template's black corners also take part in the matching."
-               if angle % 90 else "")
+               if angle % 90 and self.fill.get() != DEFAULT_FILL else "")
         )
         self._preview_result = ToolResult(
             image=results[self.choice.get()],
@@ -198,6 +208,7 @@ class _TemplateMatchingDialog(simpledialog.Dialog):
                 "Template": self.template_name,
                 "Template size": f"{self.template.width} × {self.template.height}",
                 "Template angle (degrees)": angle,
+                "Corner fill": self.fill.get(),
                 "Best match (x, y)": f"{best}",
                 "Best score": round(best_score, 4),
                 "Score range": f"{correlation.min():.4f} to {correlation.max():.4f}",
