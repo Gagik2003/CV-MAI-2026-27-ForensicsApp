@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import numpy as np
 from PIL import Image, ImageTk
-from skimage import feature
+from skimage import feature, transform
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
+from .edge_detection import BASES, COLOURS, VIEWS, show_edges
 
 
 def _grayscale_pixels(image: Image.Image) -> np.ndarray:
@@ -20,12 +21,20 @@ def _grayscale_pixels(image: Image.Image) -> np.ndarray:
     return np.asarray(image.convert("L"), dtype=float) / 255
 
 
-def correlation_map(image: Image.Image, template: Image.Image) -> np.ndarray:
+def rotate_template(template: Image.Image, angle: float = 0.0) -> np.ndarray:
+    """Grayscale template rotated counter-clockwise about its centre, keeping its size.
+
+    As with transform.rotate on the slide, the corners left uncovered become black (0).
+    """
+    return transform.rotate(_grayscale_pixels(template), angle)
+
+
+def correlation_map(image: Image.Image, template: Image.Image, angle: float = 0.0) -> np.ndarray:
     """Normalized cross-correlation of the template at every pixel, between -1 and 1.
 
     pad_input=True gives a map with the image's dimensions, centred on each pixel.
     """
-    pixels, template_pixels = _grayscale_pixels(image), _grayscale_pixels(template)
+    pixels, template_pixels = _grayscale_pixels(image), rotate_template(template, angle)
     if template_pixels.shape[0] > pixels.shape[0] or template_pixels.shape[1] > pixels.shape[1]:
         raise ValueError("The template must not be larger than the image.")
     if template_pixels.size == 0:
@@ -40,83 +49,182 @@ def correlation_image(correlation: np.ndarray) -> Image.Image:
     return Image.fromarray(np.rint(scaled * 255).astype(np.uint8))
 
 
-THRESHOLD = 0.7  # fixed for now; on the Set 4 images only the eye's few pixels pass it
+# Default display of the slide: the dimmed grayscale image with the matches in red.
+DEFAULT_VIEW, DEFAULT_COLOUR = "Bright edges, dim image", "Red"
 
 
 def thresholded_image(
-    image: Image.Image, correlation: np.ndarray, threshold: float = THRESHOLD,
+    image: Image.Image, correlation: np.ndarray, threshold: float = 0.7,
+    view: str = DEFAULT_VIEW, colour: str = DEFAULT_COLOUR, thickness: int = 1,
 ) -> Image.Image:
-    """Dimmed grayscale image with the positions scoring at least the threshold in red."""
-    pixels = np.asarray(image.convert("L"), dtype=float) * 0.4
-    rgb = np.repeat(pixels[..., None], 3, axis=2)
-    rgb[correlation >= threshold] = (255, 0, 0)
-    return Image.fromarray(np.rint(rgb).astype(np.uint8))
+    """Superimpose the positions scoring at least the threshold, with the views from Set 3."""
+    return show_edges(image, correlation >= threshold, view, colour, thickness, base=BASES[1])
 
 
 PANELS = ("Original image", "Template", "Normalized cross-correlation", "Thresholded image")
 APPLY_OPTIONS = PANELS[2:]
+# Number setting: (label, default, minimum, maximum, step).
+SETTINGS = {
+    "angle": ("Template angle (degrees, counter-clockwise)", 0.0, -180.0, 180.0, 5.0),
+    "threshold": ("Threshold (score from -1 to 1)", 0.7, -1.0, 1.0, 0.01),
+    "thickness": ("Mark thickness (px)", 1, 1, 10, 1),
+}
 
 
 class _TemplateMatchingDialog(simpledialog.Dialog):
-    """Shows the four images of the slide; OK applies the selected result."""
+    """The four images of the slide, updated as the settings change; OK applies one result."""
 
     def __init__(
         self, parent: tk.Misc, image: Image.Image, template: Image.Image, template_name: str,
     ) -> None:
-        self.source, self.template, self.template_name = image, template, template_name
-        self.correlation = correlation_map(image, template)
-        self.results = {
-            APPLY_OPTIONS[0]: correlation_image(self.correlation),
-            APPLY_OPTIONS[1]: thresholded_image(image, self.correlation),
-        }
-        super().__init__(parent, title="Normalized cross-correlation")
+        self.source, self.template, self.template_name = image.copy(), template, template_name
+        self._preview_after: str | None = None
+        self._preview_result: ToolResult | None = None
+        super().__init__(parent, title="Template matching")
 
-    def body(self, master: tk.Misc) -> ttk.Combobox:
-        self._photos = []
-        images = (self.source, self.template, *self.results.values())
-        for index, (title, image) in enumerate(zip(PANELS, images)):
+    def body(self, master: tk.Misc) -> ttk.Spinbox:
+        controls = ttk.Frame(master)
+        controls.grid(row=0, column=0, columnspan=2, sticky="w", padx=5)
+        self.values: dict[str, tk.StringVar] = {}
+        spinboxes = []
+        for row, (name, (label, default, low, high, step)) in enumerate(SETTINGS.items()):
+            self.values[name] = tk.StringVar(master, value=str(default))
+            ttk.Label(controls, text=label + ":").grid(row=row, column=0, sticky="w", pady=2)
+            spinbox = ttk.Spinbox(controls, textvariable=self.values[name], from_=low, to=high,
+                                  increment=step, width=8)
+            spinbox.grid(row=row, column=1, sticky="w", padx=6, pady=2)
+            spinboxes.append(spinbox)
+        self.view = tk.StringVar(master, value=DEFAULT_VIEW)
+        self.colour = tk.StringVar(master, value=DEFAULT_COLOUR)
+        for row, (label, variable, values, width) in enumerate((
+            ("Superimposition", self.view, VIEWS, 22), ("Colour", self.colour, tuple(COLOURS), 8),
+        )):
+            ttk.Label(controls, text=label + ":").grid(row=row, column=2, sticky="w", padx=(20, 0))
+            ttk.Combobox(controls, textvariable=variable, values=values, state="readonly",
+                         width=width).grid(row=row, column=3, sticky="w", padx=6, pady=2)
+
+        self.canvases = []
+        self._photos: list[ImageTk.PhotoImage | None] = [None] * 4
+        for index, title in enumerate(PANELS):
             row, column = divmod(index, 2)
-            ttk.Label(master, text=title).grid(row=row * 2, column=column, pady=(6, 2))
+            ttk.Label(master, text=title).grid(row=row * 2 + 1, column=column, pady=(6, 2))
             canvas = tk.Canvas(master, width=330, height=260, background="white",
                                highlightthickness=0)
-            canvas.grid(row=row * 2 + 1, column=column, padx=4)
-            self._photos.append(ImageTk.PhotoImage(_fit(image, 320, 250), master=self))
-            canvas.create_image(165, 130, image=self._photos[-1])
+            canvas.grid(row=row * 2 + 2, column=column, padx=4)
+            self.canvases.append(canvas)
+        self._show_image(0, self.source)
 
-        row, column = np.unravel_index(np.argmax(self.correlation), self.correlation.shape)
-        self.best = int(column), int(row)
-        self.matches = int((self.correlation >= THRESHOLD).sum())
-        ttk.Label(
-            master, wraplength=660,
-            text=f"Best match at (x, y) = {self.best} with score "
-            f"{self.correlation[row, column]:.3f}. {self.matches} position(s) score at least "
-            f"{THRESHOLD} and are shown in red. Scores range from -1 to 1; the correlation "
-            "image shows its lowest score as black and its highest as white.",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=5, pady=8)
+        self.status = tk.StringVar(master)
+        ttk.Label(master, textvariable=self.status, wraplength=660).grid(
+            row=5, column=0, columnspan=2, sticky="w", padx=5, pady=8,
+        )
         options = ttk.Frame(master)
-        options.grid(row=5, column=0, columnspan=2, sticky="w", padx=5)
+        options.grid(row=6, column=0, columnspan=2, sticky="w", padx=5)
         ttk.Label(options, text="OK applies:").grid(row=0, column=0, padx=(0, 6))
         self.choice = tk.StringVar(master, value=APPLY_OPTIONS[1])
-        combobox = ttk.Combobox(options, textvariable=self.choice, values=APPLY_OPTIONS,
-                                state="readonly", width=28)
-        combobox.grid(row=0, column=1)
-        return combobox
+        ttk.Combobox(options, textvariable=self.choice, values=APPLY_OPTIONS,
+                     state="readonly", width=28).grid(row=0, column=1)
 
-    def apply(self) -> None:
-        low, high = self.correlation.min(), self.correlation.max()
-        self.result = ToolResult(
-            image=self.results[self.choice.get()],
+        for variable in (*self.values.values(), self.view, self.colour, self.choice):
+            variable.trace_add("write", self._schedule_preview)
+        self._schedule_preview()
+        return spinboxes[0]
+
+    def _settings(self) -> tuple[float, float, int]:
+        numbers = []
+        for name, (label, _default, low, high, _step) in SETTINGS.items():
+            try:
+                number = int(self.values[name].get()) if name == "thickness" \
+                    else float(self.values[name].get())
+            except ValueError:
+                raise ValueError(f"Enter a number for {label.lower()}.") from None
+            if not low <= number <= high:
+                raise ValueError(f"{label} must be between {low:g} and {high:g}.")
+            numbers.append(number)
+        angle, threshold, thickness = numbers
+        return angle, threshold, thickness
+
+    def _schedule_preview(self, *_args: str) -> None:
+        self._preview_result = None
+        self.status.set("Updating preview…")
+        if self._preview_after is not None:
+            self.after_cancel(self._preview_after)
+        # Wait for a pause while typing; the correlation always uses the full image.
+        self._preview_after = self.after(250, self._update_preview)
+
+    def _show_image(self, index: int, image: Image.Image | None) -> None:
+        canvas = self.canvases[index]
+        canvas.delete("all")
+        self._photos[index] = None
+        if image is not None:
+            self._photos[index] = ImageTk.PhotoImage(_fit(image, 320, 250), master=self)
+            canvas.create_image(165, 130, image=self._photos[index])
+
+    def _update_preview(self) -> bool:
+        self._preview_after = None
+        try:
+            angle, threshold, thickness = self._settings()
+            template = Image.fromarray(np.rint(rotate_template(self.template, angle) * 255)
+                                       .astype(np.uint8))
+            correlation = correlation_map(self.source, self.template, angle)
+        except ValueError as error:
+            self._preview_result = None
+            for index in (1, 2, 3):
+                self._show_image(index, None)
+            self.status.set(str(error))
+            return False
+        results = {
+            APPLY_OPTIONS[0]: correlation_image(correlation),
+            APPLY_OPTIONS[1]: thresholded_image(self.source, correlation, threshold,
+                                                self.view.get(), self.colour.get(), thickness),
+        }
+        for index, image in enumerate((template, *results.values()), start=1):
+            self._show_image(index, image)
+
+        row, column = np.unravel_index(np.argmax(correlation), correlation.shape)
+        best, best_score = (int(column), int(row)), float(correlation[row, column])
+        matches = int((correlation >= threshold).sum())
+        self.status.set(
+            f"Best match at (x, y) = {best} with score {best_score:.3f}. {matches} position(s) "
+            f"score at least {threshold:g}. Scores range from -1 to 1; the correlation image "
+            "shows its lowest score as black and its highest as white."
+            + (" The rotated template's black corners also take part in the matching."
+               if angle % 90 else "")
+        )
+        self._preview_result = ToolResult(
+            image=results[self.choice.get()],
             message=f"Applied the {self.choice.get().lower()} for {self.template_name}.",
             details={
                 "Template": self.template_name,
                 "Template size": f"{self.template.width} × {self.template.height}",
-                "Best match (x, y)": f"{self.best}",
-                "Best score": round(float(high), 4),
-                "Score range": f"{low:.4f} to {high:.4f}",
-                "Threshold": THRESHOLD,
-                "Positions at or above threshold": self.matches,
+                "Template angle (degrees)": angle,
+                "Best match (x, y)": f"{best}",
+                "Best score": round(best_score, 4),
+                "Score range": f"{correlation.min():.4f} to {correlation.max():.4f}",
+                "Threshold": threshold,
+                "Positions at or above threshold": matches,
+                "Superimposition": self.view.get(),
             },
         )
+        return True
+
+    def validate(self) -> bool:
+        if self._preview_after is not None:
+            self.after_cancel(self._preview_after)
+            self._preview_after = None
+        if self._preview_result is None and not self._update_preview():
+            messagebox.showerror(self.title(), self.status.get(), parent=self)
+            return False
+        return True
+
+    def apply(self) -> None:
+        self.result = self._preview_result
+
+    def cancel(self, event: tk.Event | None = None) -> None:
+        if self._preview_after is not None:
+            self.after_cancel(self._preview_after)
+            self._preview_after = None
+        super().cancel(event)
 
 
 def _fit(image: Image.Image, width: int, height: int) -> Image.Image:
@@ -129,9 +237,9 @@ def _fit(image: Image.Image, width: int, height: int) -> Image.Image:
 
 class TemplateMatchingTool(ForensicsTool):
     tool_id = "template_matching"
-    title = "Normalized cross-correlation"
+    title = "Template matching"
     category = "Template matching"
-    description = "Show how well a template matches each position of the image."
+    description = "Find a template with normalized cross-correlation, a rotation angle and a threshold."
     works_on_histogram = False
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
@@ -145,6 +253,7 @@ class TemplateMatchingTool(ForensicsTool):
             return None
         with Image.open(filename) as template_file:
             template = template_file.copy()
+        _grayscale_pixels(template)  # reject unsupported modes before opening the dialog
         return _TemplateMatchingDialog(
             parent, document.current, template, Path(filename).name,
         ).result
